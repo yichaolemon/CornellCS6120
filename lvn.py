@@ -2,7 +2,17 @@ from mycfg import blocks_by_label, form_blocks, blocks_to_json
 import json
 import sys
 
+COMMUTATIVE_OPS = set(["add","mul"])
 
+
+"""
+Capabilities:
+- copy propagation
+- CSE exploiting commutativity
+- id propagation and folding
+
+TODO: constant folding
+"""
 class LVN:
     def __init__(self):
         # map from variable to value number
@@ -17,8 +27,10 @@ class LVN:
         if op == "const":
             return (op, instr["value"])
         args = instr["args"]
-        arg_numbers = tuple(self.environment[arg] for arg in args)
-        return (op, arg_numbers)
+        arg_numbers = [self.environment[arg] for arg in args]
+        if op in COMMUTATIVE_OPS:
+            arg_numbers.sort()
+        return (op, tuple(arg_numbers))
 
     def add_instr(self, instr):
         if "dest" not in instr:
@@ -28,6 +40,9 @@ class LVN:
         value = self.make_value(instr)
         if value in self.value_to_number:
             number = self.value_to_number[value]
+        elif value[0] == "id":
+            number = value[1][0]
+            self.value_to_number[value] = number
         else:
             number = len(self.value_table)
             self.value_table.append((value, dest))
@@ -36,17 +51,28 @@ class LVN:
 
 
     def reconstruct_instr(self, instr):
-        # See if we can replace the whole value.
+        if "op" not in instr or "args" not in instr:
+            # label instr 
+            return
+        value = self.make_value(instr)
+        # if value already exists and has a diff canonical variable representation
         if "dest" in instr:
-            value = self.make_value(instr)
-            canonical = self.value_table[self.value_to_number[value]][1]
-            if canonical != instr["dest"]:
+            canonical_var = self.value_table[self.value_to_number[value]][1]
+            if canonical_var != instr["dest"]:
                 instr["op"] = "id"
-                instr["args"] = [canonical]
-                return
+                instr["args"] = [canonical_var]
+        # replace each var in args with canonical 
         if "args" in instr:
-            value = self.make_value(instr)
-            instr["args"] = [self.value_table[number][1] for number in value[1]]
+            instr["args"] = [self.value_table[arg_num][1] for arg_num in value[1]]
+        # id propagation and folding
+        if "op" in instr and instr["op"] == "id":
+            canonical_var = instr["args"][0]
+            (canonical_op, canonical_args), _ = self.value_table[self.environment[canonical_var]]
+
+            if canonical_op == "const":
+                instr["op"] = "const"
+                instr.pop("args", None)
+                instr["value"] = canonical_args
 
 # find defs not used or later overwritten
 def delete_deadcode(block):
