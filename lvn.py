@@ -3,15 +3,14 @@ import json
 import sys
 
 COMMUTATIVE_OPS = set(["add","mul"])
+EVAL_OPS = set(["id","add","sub","div","mul"])
 
 
 """
 Capabilities:
 - copy propagation
 - CSE exploiting commutativity
-- id propagation and folding
-
-TODO: constant folding
+- id/constant propagation and folding
 """
 class LVN:
     def __init__(self):
@@ -49,6 +48,24 @@ class LVN:
             self.value_to_number[value] = number
         self.environment[dest] = number
 
+    def eval(self, op, operands):
+        if op == "mul":
+            return operands[0] * operands[1]
+        elif op == "add":
+            return operands[0] + operands[1]
+        elif op == "sub":
+            return operands[0] - operands[1]
+        elif op == "div":
+            if operands[1] == 0:
+                raise Exception("division by zero")
+            return operands[0] // operands[1]
+        elif op == "id":
+            return operands[0]
+        else:
+            raise Exception("eval not yet implemented for op:{}".format(op))
+
+    def is_var_constant(self, var):
+        return self.value_table[self.environment[var]][0][0] == "const"
 
     def reconstruct_instr(self, instr):
         if "op" not in instr or "args" not in instr:
@@ -64,15 +81,23 @@ class LVN:
         # replace each var in args with canonical 
         if "args" in instr:
             instr["args"] = [self.value_table[arg_num][1] for arg_num in value[1]]
-        # id propagation and folding
-        if "op" in instr and instr["op"] == "id":
-            canonical_var = instr["args"][0]
-            (canonical_op, canonical_args), _ = self.value_table[self.environment[canonical_var]]
-
-            if canonical_op == "const":
-                instr["op"] = "const"
-                instr.pop("args", None)
-                instr["value"] = canonical_args
+        # id/const propagation and folding
+        if "op" in instr and instr["op"] in EVAL_OPS:
+            op = instr["op"]
+            canonical_vars = instr["args"]
+            if all(self.is_var_constant(var) for var in canonical_vars):
+                operands = [self.value_table[self.environment[var]][0][1] for var in canonical_vars]
+                try:
+                    new_const_val = self.eval(op, operands)
+                    instr["op"] = "const"
+                    instr.pop("args", None)
+                    instr["value"] = new_const_val
+                    if "dest" in instr:
+                        dest_var = instr["dest"]
+                        self.value_table[self.environment[dest_var]] = (("const", new_const_val), dest_var)
+                        del self.value_to_number[value]
+                except Exception as ex:
+                    pass
 
 # find defs not used or later overwritten
 def delete_deadcode(block):
